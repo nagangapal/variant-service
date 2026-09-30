@@ -69,9 +69,9 @@ export function registerAssignRoutes(app: FastifyInstance, cache: ConfigCache): 
     return {
       visitorId,
       assignments,
-      // Served from a snapshot that is past its TTL, or from a snapshot that a
-      // failed refresh could not improve on. Not merely "some time has passed" --
-      // a warm cache is the normal state and reporting it as stale would be noise.
+      // Served from a snapshot that could not be refreshed, or one that is past
+      // CONFIG_MAX_STALE_MS. Not merely "some time has passed" -- a warm cache is the
+      // normal state, and reporting it as stale would make the flag useless.
       stale: cache.health().status === 'stale' || cache.health().status === 'expired',
     };
   };

@@ -238,6 +238,51 @@ describe('degradation: database unavailable', () => {
     await resetPool(WORKING_DB);
     await cache.stop();
   });
+
+  it('reports stale -- not warm -- when a refresh fails with an empty error message', async () => {
+    // Regression, and the reason this test throws an Error with an empty message
+    // rather than pointing at a dead port: connection-refused produces a *non-empty*
+    // message, so that version of this test passed with the bug still present.
+    //
+    // Staleness was derived from `lastError` being truthy. When a live Postgres
+    // connection dies -- which is exactly what a hosted database suspending an idle
+    // connection does -- node-postgres surfaces an Error whose message is ''. Empty
+    // string is falsy, so a cache being served stale after an outage reported 'warm'
+    // and /v1/assign reported stale:false.
+    //
+    // The fail-safe behaviour was never wrong; it kept serving the old snapshot. What
+    // was wrong is that nothing reported the outage, which defeats tracking it.
+    const cache = new ConfigCache({ ttlMs: 60_000, maxStaleMs: 600_000 });
+    await cache.refresh();
+    expect(cache.health().status).toBe('warm');
+
+    // Reproduce the real failure mode: a live connection dropping with no message.
+    const proto = ConfigCache.prototype as unknown as {
+      loadExperiments: () => Promise<never[]>;
+    };
+    const original = proto.loadExperiments;
+    proto.loadExperiments = () => Promise.reject(new Error(''));
+    try {
+      await cache.refresh();
+
+      const h = cache.health();
+      expect(h.status).toBe('stale');
+      expect(h.refreshFailureCount).toBeGreaterThan(0);
+      // A health signal that can be an empty string is not a health signal.
+      expect((h.lastError ?? '').length).toBeGreaterThan(0);
+      // The snapshot is still served: this is a degradation, not an outage.
+      expect(h.experimentCount).toBeGreaterThan(0);
+    } finally {
+      proto.loadExperiments = original;
+    }
+
+    // And it recovers: a later successful refresh must clear the flag, or the service
+    // would report itself degraded forever after a transient blip.
+    await cache.refresh();
+    expect(cache.health().status).toBe('warm');
+    expect(cache.health().lastError).toBeNull();
+    await cache.stop();
+  });
 });
 
 describe('health reporting', () => {

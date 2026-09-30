@@ -28,6 +28,23 @@ import { query } from '../db/pool.js';
 
 const CHANNEL = 'config_changed';
 
+/**
+ * A never-empty description of a thrown value.
+ *
+ * `err.message` is not guaranteed to be truthy -- node-postgres produces connection
+ * errors with an empty message -- and an empty string used as a health signal is worse
+ * than no signal, because it reads as "no problem" to everything downstream.
+ */
+function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    const msg = err.message?.trim();
+    if (msg) return msg;
+    return err.name || err.constructor?.name || 'unknown error';
+  }
+  const text = String(err ?? '').trim();
+  return text || 'unknown error';
+}
+
 export interface CacheHealth {
   status: 'cold' | 'warm' | 'stale' | 'expired';
   experimentCount: number;
@@ -70,6 +87,18 @@ export class ConfigCache {
   private stopped = false;
 
   private lastError: string | null = null;
+  /**
+   * Whether the most recent refresh attempt failed.
+   *
+   * Deliberately separate from `lastError`. An earlier version derived staleness from
+   * `lastError` being truthy, which silently failed: node-postgres surfaces some
+   * connection failures as an Error with an empty message, so `lastError` was `''`,
+   * which is falsy, so a cache being served stale after a database outage reported
+   * status 'warm' and the assign endpoint reported stale:false. The fail-safe
+   * behaviour was still correct -- it kept serving -- but nothing signalled the
+   * outage, which is the part that matters when you are trying to notice one.
+   */
+  private lastRefreshFailed = false;
   private lastRefreshAt: number | null = null;
   private refreshCount = 0;
   private refreshFailureCount = 0;
@@ -129,10 +158,12 @@ export class ConfigCache {
         // one, never a partially rebuilt structure.
         this.snapshot = { experiments: next, loadedAt: Date.now() };
         this.lastError = null;
+        this.lastRefreshFailed = false;
         this.lastRefreshAt = Date.now();
         this.refreshCount++;
       } catch (err) {
-        this.lastError = (err as Error).message;
+        this.lastError = describeError(err);
+        this.lastRefreshFailed = true;
         this.refreshFailureCount++;
         // Intentionally no rethrow and no snapshot mutation. A failed refresh is a
         // no-op; the previous snapshot remains authoritative.
@@ -238,7 +269,7 @@ export class ConfigCache {
     } catch (err) {
       // Invalidation is an optimisation. If it fails the TTL still self-heals, so this
       // must not fail the caller's write.
-      this.lastError = `notify failed: ${(err as Error).message}`;
+      this.lastError = `notify failed: ${describeError(err)}`;
     }
   }
 
@@ -275,7 +306,7 @@ export class ConfigCache {
     });
 
     client.on('error', (err) => {
-      this.lastError = `listener error: ${err.message}`;
+      this.lastError = `listener error: ${describeError(err)}`;
       this.listener = null;
       // Reconnect with backoff. A dead listener degrades us to TTL-based refresh,
       // which is slower but still correct.
@@ -338,7 +369,8 @@ export class ConfigCache {
     }
     const ageMs = Date.now() - this.snapshot.loadedAt;
     return {
-      status: ageMs > this.maxStaleMs ? 'expired' : this.lastError ? 'stale' : 'warm',
+      // 'stale' is driven by the explicit failure flag, not by lastError's truthiness.
+      status: ageMs > this.maxStaleMs ? 'expired' : this.lastRefreshFailed ? 'stale' : 'warm',
       experimentCount: this.snapshot.experiments.size,
       ageMs,
       maxStaleMs: this.maxStaleMs,

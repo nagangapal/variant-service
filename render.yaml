@@ -1,0 +1,96 @@
+# Render blueprint for variant-service.
+#
+#   render blueprint launch    # or connect this repo in the Render dashboard
+#
+# Postgres is NOT defined here on purpose. The free Neon tier does not expire the way
+# Render's own free Postgres does, and it is a separate account, so DATABASE_URL is
+# supplied as a secret rather than provisioned by this blueprint. See README
+# "Deploying to Render + Neon" for the Neon setup.
+#
+# ---------------------------------------------------------------------------
+# Read the free-tier limits before trusting the latency numbers in the README.
+# ---------------------------------------------------------------------------
+# The performance figures in this repo (p99 7.4ms, 8,150 visitors/s) were measured
+# against a local Postgres and a warm process. On the free tier:
+#
+#   * The web service idles out after ~15 minutes and cold-starts in tens of seconds.
+#   * Neon suspends the database after ~5 minutes idle and takes seconds to resume.
+#   * Config is cached in-process, so a cold start has no snapshot to serve from.
+#
+# Together these mean the first request after an idle period is slow, and the assignment
+# deadline is what decides whether it degrades to the default experience. This is the
+# fail-closed path working as designed, not a defect -- but it is not a fair basis for
+# the performance claims, so the README says so explicitly.
+#
+# A paid Render instance removes the app cold start. It does not remove Neon's suspend
+# behaviour, which is why the config cache and its TTL matter more here than they would
+# on a permanently-warm deployment.
+
+services:
+  - type: web
+    name: variant-service
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon
+    healthCheckPath: /healthz
+    # 512MB is the free tier ceiling. The service needs ~90MB resident; the headroom
+    # covers the tracker queue under load rather than leaving it empty.
+    dockerContext: .
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: HOST
+        value: 0.0.0.0
+
+      # Required. Create at https://neon.tech -> create a project -> Connection.
+      # Use the *direct* connection string, not the "-pooler" one: LISTEN/NOTIFY
+      # requires a session, and a transaction-mode pooler silently breaks config
+      # invalidation so it falls back to TTL-only. This is the single most important
+      # value in this file.
+      - key: DATABASE_URL
+        sync: false
+
+      # Required in production; the service refuses to boot without it.
+      - key: ADMIN_TOKEN
+        generateValue: true
+
+      # Config cache. The deadline is raised from the 150ms local default because a
+      # resumed Neon connection is slower than a warm local socket. This only affects
+      # the cold path -- warm requests never touch the database.
+      - key: CONFIG_TTL_MS
+        value: "5000"
+      - key: CONFIG_MAX_STALE_MS
+        value: "3600000"
+      - key: ASSIGNMENT_DEADLINE_MS
+        value: "2500"
+      - key: TRACK_WRITE_TIMEOUT_MS
+        value: "3000"
+      - key: TRACK_QUEUE_MAX
+        value: "20000"
+      - key: TRACK_RETRY_INTERVAL_MS
+        value: "2000"
+
+      - key: DB_POOL_MAX
+        value: "5"
+      - key: DB_STATEMENT_TIMEOUT_MS
+        value: "5000"
+      - key: DB_CONNECT_TIMEOUT_MS
+        value: "8000"
+
+      # Content generation is off. A 512MB free instance cannot host a model, and the
+      # service is explicitly designed so this is a config change rather than a code
+      # change: with 'none', creatives are supplied per experiment and everything
+      # except generation works identically.
+      #
+      # To enable it, set LLM_API_KEY to a hosted provider key and change LLM_PROVIDER
+      # to 'anthropic' or 'openai'. Do NOT point LLM_BASE_URL at a self-hosted Ollama
+      # here: there is no memory for it on this tier.
+      - key: LLM_PROVIDER
+        value: none
+
+      - key: LOG_LEVEL
+        value: info
