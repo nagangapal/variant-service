@@ -1,0 +1,28 @@
+name: variant-service-db
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: vs-db
+    environment:
+      POSTGRES_USER: variant
+      POSTGRES_PASSWORD: variant
+      POSTGRES_DB: variant
+    ports:
+      - "55432:5432"
+    volumes:
+      - vs-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U variant -d variant"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=256MB
+
+volumes:
+  vs-pgdata:

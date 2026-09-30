@@ -1,0 +1,86 @@
+# Fly.io deployment.
+#
+# The service is a stateless Node process: assignment is a pure function of the visitor
+# id, so any number of machines are interchangeable and no coordination is required
+# between them. Postgres is the only stateful component and is attached separately.
+
+app = "variant-service"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  HOST = "0.0.0.0"
+  LOG_LEVEL = "info"
+
+  # Config cache. See README "Configuration cache and failure behaviour".
+  CONFIG_TTL_MS = "5000"
+  # Long on purpose: serving a slightly stale split beats taking a live experiment
+  # offline during a database blip.
+  CONFIG_MAX_STALE_MS = "3600000"
+
+  # Request budgets. These are the levers that keep the customer-facing path fast
+  # when a dependency degrades.
+  ASSIGNMENT_DEADLINE_MS = "150"
+  TRACK_WRITE_TIMEOUT_MS = "750"
+  TRACK_QUEUE_MAX = "50000"
+  TRACK_RETRY_INTERVAL_MS = "2000"
+
+  DB_STATEMENT_TIMEOUT_MS = "2000"
+  DB_CONNECT_TIMEOUT_MS = "3000"
+
+  # Content generation. 'none' means creatives must be supplied explicitly; switch to
+  # 'anthropic' or 'openai' and set the key as a secret to enable generation.
+  LLM_PROVIDER = "none"
+  LLM_MAX_CANDIDATES = "3"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  # Liveness only. /healthz touches no dependency on purpose: a database blip must not
+  # restart every machine and turn a degradation into an outage.
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/healthz"
+
+  # Readiness. Returns 200 even when degraded, because an instance still serving
+  # assignments from a stale snapshot is more useful in rotation than stopped.
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/readyz"
+
+# Instances are interchangeable, so scale on the customer-facing latency that matters
+# rather than on anything experiment-specific.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpus = 1
+
+# sendBeacon and normal page loads are plain HTTP/1.1 and HTTP/2 traffic; this is the
+# default and needs no tuning. Listed explicitly to document the intent.
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 3000
+
+  # Processes on the public interface are terminated with SIGTERM, which the server
+  # handles by refusing new work, draining in-flight requests, and flushing the
+  # tracker queue. The drain is bounded at 15s, after which the process exits rather
+  # than waiting to be SIGKILLed -- which means queued events beyond that window are
+  # lost. See README "Known limitations".
+  [services.http_checks]
+
+  [services.tcp_checks]

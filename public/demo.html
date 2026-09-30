@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>variant-service demo</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --text:#e6e8ee; --muted:#8b93a7; --accent:#6aa9ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 40px 24px 80px; }
+  h1 { font-size:24px; margin:0 0 6px; letter-spacing:-0.02em; }
+  .sub { color:var(--muted); font-size:14px; margin-bottom:32px; }
+  .hero { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:32px; margin-bottom:24px; }
+  .hero h2 { margin:0 0 6px; font-size:22px; letter-spacing:-0.01em; }
+  .hero p { color:var(--muted); margin:0 0 20px; }
+  button { background:var(--accent); color:#06101f; border:0; border-radius:8px;
+           padding:11px 20px; font:inherit; font-weight:600; cursor:pointer; }
+  button:hover { filter:brightness(1.1); }
+  .log { background:#0b0d11; border:1px solid var(--line); border-radius:10px; padding:16px;
+         font:12px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; color:var(--muted);
+         max-height:340px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:6px 18px; margin-top:16px; font-size:14px; }
+  .kv dt { color:var(--muted); }
+  .kv dd { margin:0; }
+  .note { font-size:13px; color:var(--muted); margin-top:14px; line-height:1.55; }
+  code { background:#0b0d11; border:1px solid var(--line); border-radius:4px; padding:1px 5px; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>variant-service demo</h1>
+  <div class="sub">A live page using the real client snippet. Reload it and the variant stays the same.</div>
+
+  <div class="hero">
+    <h2 data-vs-target="checkout-cta">Start your 14-day free trial</h2>
+    <p>Ship faster with tooling your team will actually keep using.</p>
+    <button>Start free trial</button>
+  </div>
+
+  <button onclick="convert()">I converted (fires the conversion beacon)</button>
+
+  <dl class="kv">
+    <dt>Your visitor id</dt><dd id="vid">…</dd>
+    <dt>Assigned variant</dt><dd id="variant">…</dd>
+    <dt>Creative id</dt><dd id="cid">…</dd>
+  </dl>
+
+  <div class="note">
+    The headline above is replaced only after the assignment call returns. If the service is
+    slow, unreachable, or returning an error, the page keeps the copy that is already here.
+    The snippet races the request against an 80ms deadline, so this demo cannot hang.
+    Set <code>?data-timeout=1</code> behaviour by blocking the endpoint to see it degrade.
+  </div>
+
+  <div style="height:20px"></div>
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+const log = (m) => { document.getElementById('log').textContent += m + '\n'; };
+const $ = (id) => document.getElementById(id);
+
+function uuid() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+async function convert() {
+  const a = (window.__vsAssignments || []).find(x => x.variantKey);
+  if (!a) { log('no assignment yet, nothing to convert'); return; }
+  const visitorId = window.__vsVisitorId;
+  const res = await fetch('/v1/track', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      events: [{
+        eventId: uuid(), type: 'conversion', experimentId: a.experimentId,
+        variantKey: a.variantKey, visitorId, goal: 'signup', ts: Date.now(),
+      }],
+    }),
+  });
+  const j = await res.json();
+  log(`conversion sent -> ${JSON.stringify(j)}`);
+}
+
+window.__vsOnAssign = function (assignments, visitorId) {
+  $('vid').textContent = visitorId;
+  const a = assignments[0] || {};
+  $('variant').textContent = a.variantKey || ('none (' + a.reason + ')');
+  $('cid').textContent = a.creativeId || '—';
+  log('assignment: ' + JSON.stringify(a));
+};
+</script>
+
+<!--
+  The real snippet, not a mock. Note data-track="false": the demo page sends its own
+  beacons so the console log stays readable.
+-->
+<script async src="/snippet.js"
+        data-experiments="checkout-cta"
+        data-endpoint=""
+        data-track="false"
+        data-debug="true"></script>
+</body>
+</html>
