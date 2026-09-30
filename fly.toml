@@ -69,18 +69,12 @@ primary_region = "iad"
   memory = "512mb"
   cpus = 1
 
-# sendBeacon and normal page loads are plain HTTP/1.1 and HTTP/2 traffic; this is the
-# default and needs no tuning. Listed explicitly to document the intent.
-
-[[services]]
-  protocol = "tcp"
-  internal_port = 3000
-
-  # Processes on the public interface are terminated with SIGTERM, which the server
-  # handles by refusing new work, draining in-flight requests, and flushing the
-  # tracker queue. The drain is bounded at 15s, after which the process exits rather
-  # than waiting to be SIGKILLed -- which means queued events beyond that window are
-  # lost. See README "Known limitations".
-  [services.http_checks]
-
-  [services.tcp_checks]
+# SIGTERM handling: processes on the public interface are terminated with SIGTERM, which
+# the server handles by refusing new work, draining in-flight requests, and flushing the
+# tracker queue. The drain is bounded at 15s, after which the process exits rather than
+# waiting to be SIGKILLed -- which means queued events beyond that window are lost. See
+# README "Known limitations".
+#
+# No [[services]] block on purpose: [http_service] above is the service definition, and
+# declaring a second one alongside it produces a conflicting duplicate that Fly warns
+# about ("Service must expose at least one port") because the tcp block has no ports.
