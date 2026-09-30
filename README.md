@@ -202,14 +202,15 @@ curl -s -X POST http://localhost:3000/v1/assign -H 'content-type: application/js
 
 | Reason | Meaning |
 | --- | --- |
-| `null` with a `variantKey` | Assigned. |
+| `assigned` | Assigned; `variantKey` and `payload` are populated. |
 | `not_in_allocation` | Outside this experiment's traffic allocation. |
 | `experiment_not_found` | Unknown id, or in another namespace. |
-| `experiment_paused` / `experiment_archived` / `experiment_not_running` | Lifecycle state. |
-| `zero_weight` | All variant weights are zero; misconfiguration. |
+| `experiment_paused` | Paused or archived. |
+| `experiment_not_running` | Draft, or otherwise not serving. |
+| `no_variants` | Running but has no usable variant; misconfiguration. |
 
 `stale: true` means the assignment came from a snapshot that could not be refreshed.
-`payload` is `null` and `variantKey` is `null` when nothing is assigned, so the snippet
+`payload` and `variantKey` are `null` whenever `reason` is not `assigned`, so the snippet
 renders its original markup unchanged.
 
 ### Control plane — requires `x-admin-token`
