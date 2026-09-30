@@ -187,10 +187,22 @@ export class CreativeGenerator {
   ): Promise<GenerationResult> {
     const env = getEnv();
     const count = env.LLM_MAX_CANDIDATES;
+
+    /**
+     * Placeholder used when generation could not produce usable copy.
+     *
+     * The headline must be something a customer could plausibly see. An earlier
+     * version used the variant key here, which meant a failed generation put the
+     * literal string "social-proof" on the page as a headline. That is worse than an
+     * obvious placeholder because it looks like a bug to every visitor.
+     *
+     * Source is 'fallback', not 'static', so the operator can see the difference and
+     * the start guard can refuse to run an experiment on placeholder copy.
+     */
     const fallbackCreative = (): Creative => ({
       id: randomUUID(),
-      source: 'static',
-      headline: fallback?.headline ?? variantKey,
+      source: 'fallback',
+      headline: fallback?.headline ?? 'Content unavailable — please reload',
       cta: fallback?.cta,
       body: fallback?.body,
       model: null,

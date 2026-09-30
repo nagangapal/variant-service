@@ -226,8 +226,9 @@ renders its original markup unchanged.
 | `GET` | `/healthz`, `/readyz` | Liveness and readiness. |
 
 Starting an experiment is refused with `409` if it has no variants, if all weights are
-zero, or if any variant lacks a pinned creative. A blank block on a customer's page
-should be caught here, not discovered in production.
+zero, if any variant lacks a pinned creative, or if any variant is running on
+placeholder copy from a failed generation. A blank block on a customer's page should be
+caught here, not discovered in production.
 
 ### Health endpoints are deliberately different
 
@@ -387,11 +388,14 @@ curl -s -X POST "$BASE/admin/experiments" -H "x-admin-token: $TOKEN" \
   while assignment keeps working.
 - **Schema validation.** Every field is length-bounded and type-checked before storage.
 - **Near-duplicate rejection.** Variants are compared pairwise on token Jaccard
-  similarity; above `0.6` the run is rejected, because an experiment where both arms
-  say the same thing measures noise, not a treatment.
-- **Static fallback.** If no provider is configured or the call fails, the experiment is
-  still created and marked `degraded`, serving the brief's own headline. Experiments are
-  never blocked on a third-party API.
+  similarity; above `0.6` the run is flagged, because an experiment where both arms
+  say the same thing measures noise rather than a treatment.
+- **Placeholder fallback, and a start guard that catches it.** If no provider is
+  configured or the call fails, the variant is stored with `source: "fallback"` and
+  neutral placeholder copy rather than nothing. `start` then **refuses** an experiment
+  containing any fallback creative (`409 placeholder_creative`), because running one
+  would compare a real headline against filler and burn traffic to learn nothing. Fix
+  the copy or the provider, then start.
 
 Providers: Anthropic, OpenAI, Ollama (local, no key). The Anthropic adapter uses prompt
 caching, since the system prompt is identical across candidates for one experiment.
@@ -466,6 +470,41 @@ fly secrets set ADMIN_TOKEN=$(openssl rand -hex 32)
 fly deploy
 fly ips allocate                    # dedicated IPv4 for sendBeacon traffic
 ```
+
+#### Content generation on Fly, without a third-party API key
+
+The service is provider-agnostic, so AI copy generation can run on a self-hosted model
+instead of a hosted API. [`fly.ollama.toml`](./fly.ollama.toml) deploys Ollama as a
+second Fly app; the two talk over Fly's private network, so model traffic never crosses
+the public internet and the Ollama instance gets no public IP.
+
+```bash
+fly launch --config fly.ollama.toml --no-deploy --app variant-ollama
+fly volumes create ollama_data --app variant-ollama --size 10
+fly deploy --config fly.ollama.toml --app variant-ollama
+
+# then point the service at it
+fly secrets set LLM_BASE_URL=http://variant-ollama.internal:11434 --app variant-service
+```
+
+Two things about this are measured rather than assumed:
+
+- **`OLLAMA_KEEP_ALIVE` is load-bearing, not a nicety.** A cold `llama3.1:8b` call
+  measured **22.6s, of which 21.0s was model load** and ~1.5s was actual generation.
+  Without a keep-alive every generation re-pays that, and a small model is evicted
+  between calls.
+- **An 8B model fails generation sometimes.** Across a 4-variant run, `llama3.1:8b`
+  degraded on one arm. That is why the placeholder/fallback handling is strict rather
+  than permissive, and why the model is paired with a long `LLM_TIMEOUT_MS`. A larger
+  hosted model is more reliable; self-hosting buys keyless operation at the cost of
+  occasional retries.
+
+Do not use a cloud-proxied Ollama tag such as `gemma4:31b-cloud` on a fresh Fly
+machine: those route to Ollama's hosted service and need an account API key, so
+generation would fail at first call rather than at deploy.
+
+If generation is not wanted on Fly at all, set `LLM_PROVIDER=none`; the rest of the
+service is fully functional with explicitly supplied creatives.
 
 Notes for a real deployment:
 

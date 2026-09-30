@@ -16,7 +16,15 @@ export interface VariantDef {
   weightBps: number;
 }
 
-export type CreativeSource = 'static' | 'llm';
+/**
+ * Where a creative's copy came from.
+ *
+ * 'fallback' means generation was attempted and failed, so the experiment is running on
+ * a placeholder. It is tracked separately from 'static' because a deliberate static
+ * creative is a valid choice while a fallback is a defect, and only the operator can
+ * tell the difference if the two look alike.
+ */
+export type CreativeSource = 'static' | 'llm' | 'fallback';
 
 export interface Creative {
   id: string;

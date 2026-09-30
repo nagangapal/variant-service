@@ -299,9 +299,10 @@ affect a running experiment. Copy stays constant for the life of the experiment,
 also means the comparison stays valid — copy that changes mid-flight confounds the
 treatment.
 
-### Two bugs found by testing the documented examples
+### Three bugs found by testing the documented examples
 
-Worth recording, because both were invisible to the unit tests.
+Worth recording, because all three were invisible to the unit tests and all three would
+have shipped a visible defect.
 
 **1. An explicit creative was silently overwritten.** The README example supplied a
 fixed `creative` for the control arm. The response said `source: "llm"` and returned
@@ -315,7 +316,24 @@ see what the model actually produced. For a step whose output is unreviewed mode
 going live on a customer page, that is backwards. The response now includes the pinned
 creatives.
 
-Both came from running the documented examples verbatim instead of trusting them.
+**3. A failed generation put the variant key on the page as visible headline text.** This
+one is the worst of the three, and it only appeared once I tested the recommended
+self-hosted model rather than the good one. The fallback for a failed generation was
+`headline: variantKey`, so an arm that failed to generate rendered the literal string
+`social-proof` to every visitor. The fallback is now neutral placeholder copy, and —
+more importantly — a fallback creative is stored with `source: 'fallback'`, distinct from
+a deliberate `'static'` one, and `start` **refuses** to run an experiment containing any
+fallback creative.
+
+That last part is the real lesson. The original fallback was "never block the operator on
+a third-party API," which is sound as far as it goes, but it had no way to distinguish
+"the experiment is created with a placeholder" from "the experiment has content." Because
+the two looked identical, the start guard could not protect the customer page. A
+degradation that cannot be *detected* cannot be guarded against, so the fix was to make
+the degradation visible in the data model rather than to make the fallback nicer.
+
+All three came from running the documented examples and the recommended deployment path
+end to end, rather than from the unit tests. The tests were green the whole time.
 
 ### Validation and distinctness
 
@@ -328,12 +346,21 @@ result that is indistinguishable from "no effect". I report the collision rather
 hard-failing, because subtle copy tests are legitimate — but the operator is told, and
 `worstSimilarity` is in the response.
 
-### Fallback
+### Fallback, and why it has to be visible
 
-If no provider is configured or the call fails, the experiment is still created and
-marked `degraded`, serving the brief's headline. An experiment is never blocked on a
-third-party API. Using an experiment with degraded copy is a smaller problem than not
-having the experiment.
+If no provider is configured or the call fails, the variant is still stored so the
+experiment is not lost — with `source: 'fallback'` and neutral placeholder copy.
+
+The important part is that the fallback is **distinguishable in the data model**. It was
+originally `'static'`, indistinguishable from a deliberately chosen static headline,
+which meant the start guard could not tell a real experiment from one running on filler.
+A degradation that cannot be detected cannot be guarded against, so the fix was a schema
+change (`002_creative_source_fallback.sql`) and a start guard, not a nicer placeholder.
+
+`start` now returns `409 placeholder_creative` if any arm is on placeholder copy, and
+tells the operator to supply an explicit creative or fix the provider. Running such an
+experiment would compare a real headline against filler and consume traffic to learn
+nothing — worse than not running it.
 
 ### Providers
 

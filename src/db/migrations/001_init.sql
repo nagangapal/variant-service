@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS creatives (
   namespace     TEXT    NOT NULL,
   experiment_id TEXT    NOT NULL,
   variant_key   TEXT    NOT NULL,
+  -- 'fallback' is added by 002_creative_source_fallback.sql; it marks copy that exists
+  -- only because generation failed.
   source        TEXT    NOT NULL CHECK (source IN ('static','llm')),
   headline      TEXT    NOT NULL,
   cta           TEXT,

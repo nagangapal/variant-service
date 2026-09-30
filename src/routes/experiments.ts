@@ -306,10 +306,14 @@ export function registerAdminRoutes(
         `SELECT
            (SELECT count(*)::int FROM variants v WHERE v.namespace=$1 AND v.experiment_id=$2) AS variant_count,
            (SELECT COALESCE(sum(v.weight_bps),0)::int FROM variants v WHERE v.namespace=$1 AND v.experiment_id=$2) AS total_weight,
-           (SELECT count(*)::int FROM creatives c WHERE c.namespace=$1 AND c.experiment_id=$2 AND c.pinned) AS creative_count`,
+           (SELECT count(*)::int FROM creatives c WHERE c.namespace=$1 AND c.experiment_id=$2 AND c.pinned) AS creative_count,
+           (SELECT count(*)::int FROM creatives c WHERE c.namespace=$1 AND c.experiment_id=$2 AND c.pinned
+              AND c.source='fallback') AS fallback_count`,
         [ns, id],
       );
-      const r = rows[0] as { variant_count: number; total_weight: number; creative_count: number } | undefined;
+      const r = rows[0] as
+        | { variant_count: number; total_weight: number; creative_count: number; fallback_count: number }
+        | undefined;
       if (!r || r.variant_count === 0) {
         return reply.code(409).send({ error: 'no_variants', message: 'experiment has no variants' });
       }
@@ -320,6 +324,17 @@ export function registerAdminRoutes(
         return reply.code(409).send({
           error: 'missing_creative',
           message: `only ${r.creative_count} of ${r.variant_count} variants have content`,
+        });
+      }
+      // Generation failed for at least one arm, so its copy is a placeholder. Running
+      // would put placeholder text in front of real visitors, and the result would be
+      // a comparison of a real headline against a filler string -- a null experiment
+      // that still burns traffic. Fix the copy first.
+      if (r.fallback_count > 0) {
+        return reply.code(409).send({
+          error: 'placeholder_creative',
+          message: `${r.fallback_count} of ${r.variant_count} variants have placeholder copy because content generation failed`,
+          detail: 'supply an explicit creative for those variants, or fix the LLM provider and regenerate',
         });
       }
     }

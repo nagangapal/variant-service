@@ -1,0 +1,78 @@
+# Ollama machine for the experimentation service.
+#
+# Deployed as a SEPARATE Fly app from the service itself, so the model can be resized,
+# restarted, or removed without touching the service. The two talk over Fly's private
+# network, so model traffic never crosses the public internet.
+#
+#   fly launch --config fly.ollama.toml --no-deploy --app variant-ollama
+#   fly volumes create ollama_data --app variant-ollama --size 10
+#   fly deploy --config fly.ollama.toml --app variant-ollama
+#   fly secrets set OLLAMA_MODEL=llama3.1:8b --app variant-ollama
+#
+# Then on the service app:
+#   fly secrets set LLM_PROVIDER=ollama --app variant-service
+#   fly secrets set LLM_BASE_URL=http://variant-ollama.internal:11434 --app variant-service
+#   fly secrets set LLM_MODEL=llama3.1:8b --app variant-service
+#
+# ---------------------------------------------------------------------------
+# Sizing
+# ---------------------------------------------------------------------------
+# CPU-only inference, so pick the model against the memory you are willing to pay for.
+# Model weights must fit in RAM alongside the runtime:
+#
+#   gemma2:2b      1.6 GB   ~4 GB machine   fastest, noticeably weaker copy
+#   llama3.1:8b    4.9 GB   ~8 GB machine   recommended; passes schema validation
+#                                        and the 0.6 distinctness check reliably
+#
+# Do NOT use a cloud-proxied tag such as gemma4:31b-cloud here. Those route to
+# Ollama's hosted service and need an Ollama account API key; a fresh machine has
+# neither, and generation would fail at the first call rather than at deploy.
+#
+# If you want a 31B-class model, this is no longer a sensible place to run it: on CPU
+# the generation latency lands in minutes, and a GPU machine costs more than a
+# hosted API call would. The service is provider-agnostic precisely so this is a
+# config change rather than a code change.
+
+app = "variant-ollama"
+primary_region = "iad"
+
+# Model weights live in the volume, not in the image. Without this every machine
+# restart re-pulls several gigabytes from the registry.
+[build]
+  image = "ollama/ollama:0.32.6"
+
+[env]
+  # Bind to all interfaces, not just loopback, or the service cannot reach it.
+  OLLAMA_HOST = "0.0.0.0:11434"
+  # Keep the model resident between calls. Without this a small model is evicted and
+  # re-loaded on every request, which turns each generation into a cold start.
+  OLLAMA_KEEP_ALIVE = "30m"
+  # Single model in memory at a time; this box does not have the RAM for more.
+  OLLAMA_MAX_LOADED_MODELS = "1"
+  OLLAMA_NUM_PARALLEL = "1"
+  # Prefill in place of a dedicated GPU path.
+  OLLAMA_FLASH_ATTENTION = "1"
+
+# The API is reachable over the private network and does not implement auth, so the
+# service must never be exposed publicly. This service block is scoped to the private
+# interface only; no public IP is allocated.
+[experimental]
+  cmd = ["/bin/ollama", "serve"]
+
+[[services]]
+  internal_port = 11434
+  protocol = "tcp"
+  # Private-network reachability only. Do not add auto_allocate_mbps or a public IP.
+  [[services.ports]]
+    handlers = []
+    force_https = false
+
+[[mounts]]
+  source = "ollama_data"
+  destination = "/root/.ollama"
+
+[[vm]]
+  # Sized for llama3.1:8b plus runtime headroom. Drop to 4gb only with gemma2:2b.
+  size = "shared-cpu-4x"
+  memory = "8gb"
+  cpus = 4

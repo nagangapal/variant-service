@@ -177,7 +177,7 @@ describe('experiment lifecycle', () => {
     // Regression: an explicit creative used to be treated as a fallback that
     // generation silently overwrote. That defeats the point of pinning a fixed
     // control arm, and the operator would only find out by reading the response.
-    const r = (await createExperiment({
+    const body = (await createExperiment({
       id: 'fixedcontrol',
       creativeBrief: {
         objective: 'drive a demo request',
@@ -190,10 +190,51 @@ describe('experiment lifecycle', () => {
       ],
     })) as { creatives?: { variantKey: string; headline: string; cta?: string; source: string }[] };
 
-    const control = r.creatives?.find((c) => c.variantKey === 'control');
+    const control = body.creatives?.find((c) => c.variantKey === 'control');
     expect(control?.headline).toBe('Exactly this headline');
     expect(control?.cta).toBe('Exact CTA');
     expect(control?.source).toBe('static');
+  });
+
+  it('never serves the variant key as a headline when generation is unavailable', async () => {
+    // LLM_PROVIDER is 'none' in this suite, so every generation attempt degrades. The
+    // fallback used to be the literal variant key, which put strings like
+    // "social-proof" on the customer page as visible headline text.
+    const body = (await createExperiment({
+      id: 'nokeyheadline',
+      creativeBrief: { objective: 'drive signups', audience: 'developers', tone: 'direct' },
+      variants: [
+        { key: 'social-proof', weightBps: 5000 },
+        { key: 'urgency', weightBps: 5000 },
+      ],
+    })) as { creatives?: { variantKey: string; headline: string; source: string }[] };
+
+    expect(body.creatives?.length).toBe(2);
+    for (const c of body.creatives ?? []) {
+      expect(c.source).toBe('fallback');
+      expect(c.headline).not.toBe(c.variantKey);
+      expect(c.headline.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('refuses to start an experiment running on placeholder copy', async () => {
+    // Generation is unavailable in this suite, so the arms hold fallback copy. Starting
+    // would compare a real headline against filler and burn traffic to learn nothing.
+    await createExperiment({
+      id: 'placeholderstart',
+      creativeBrief: { objective: 'drive signups', audience: 'developers', tone: 'direct' },
+      variants: [
+        { key: 'control', weightBps: 5000 },
+        { key: 'treat', weightBps: 5000 },
+      ],
+    });
+    const res = await app.inject({
+      method: 'POST',
+      url: `/admin/experiments/placeholderstart/start?namespace=${NS}`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe('placeholder_creative');
   });
 
   it('refuses to start an experiment with no variants', async () => {
