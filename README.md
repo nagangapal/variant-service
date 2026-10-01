@@ -108,7 +108,7 @@ One tag. That is the entire integration.
 
 ```html
 <script async
-        src="https://variant-service.onrender.com/snippet.js"
+        src="https://<your-render-host>/snippet.js"
         data-experiments="checkout-cta,pricing-copy"></script>
 ```
 
