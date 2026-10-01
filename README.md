@@ -476,6 +476,41 @@ A seeded experiment, `default/demo-signup-flow`, is already running with 400 rea
 visitors. Its results endpoint returns a statistically significant result
 (+111.8% lift, p = 7.8e-05) and a clean SRM check.
 
+#### Exercising the live API
+
+The customer-facing paths need no credentials. The control plane needs the admin token
+below, which is a throwaway generated for this deployment — regenerate it before using
+this service for anything real.
+
+```bash
+BASE=https://variant-service-production.up.railway.app
+TOKEN=a71be05d7d5602a27fdcccaead58d0085bf57020d351d34470301ed7e0c3b97f
+
+# Public pages
+open "$BASE/demo"        # runs assignment + tracking in the browser
+open "$BASE/dashboard"   # results readout
+
+# Assignment (no auth)
+curl -s "$BASE/v1/assign?visitorId=demo-visitor&namespace=default&experiments=demo-signup-flow"
+
+# Results for the seeded experiment (auth)
+curl -s "$BASE/admin/results/demo-signup-flow" -H "x-admin-token: $TOKEN"
+
+# Create an experiment (auth)
+curl -s -X POST "$BASE/admin/experiments" -H "x-admin-token: $TOKEN" \
+  -H 'content-type: application/json' -d '{
+    "id": "my-test", "status": "running",
+    "variants": [
+      {"key":"control","weightBps":5000,
+       "creative":{"headline":"Original headline","body":"Original body.","cta":"Start free"}},
+      {"key":"treatment","weightBps":5000,
+       "creative":{"headline":"A different headline","body":"Different body entirely.","cta":"See the proof"}}
+    ]}'
+```
+
+Re-running the create call returns `409 already_exists`; pick a different `id`, or
+`POST /admin/experiments/my-test/stop` first.
+
 > **Note on hosting:** the first choice was Render's free tier. Render now requires
 > payment information before it will create *any* service, including a free one
 > (`Payment information is required to complete this request`), so a no-card deployment
@@ -642,7 +677,15 @@ obviously correct are the parts with no I/O, which is what makes them testable.
 
 ## Design trade-offs
 
-Full reasoning is in [DESIGN.md](./DESIGN.md). The short version:
+Full reasoning is in [DESIGN.md](./DESIGN.md): [stateless assignment](./DESIGN.md#2-stateless-assignment),
+[the config cache](./DESIGN.md#3-the-configuration-cache),
+[tracking and idempotency](./DESIGN.md#4-tracking-and-idempotency),
+[results and statistical validity](./DESIGN.md#5-results),
+[the LLM decision](./DESIGN.md#6-llm-content-generation),
+[scale](./DESIGN.md#8-scale),
+[what I would do next](./DESIGN.md#9-what-i-would-do-next), and
+[an honest assessment of the weak points](./DESIGN.md#10-honest-assessment-of-the-weak-points).
+The short version:
 
 | Decision | Chosen | Rejected | Why |
 | --- | --- | --- | --- |

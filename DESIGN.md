@@ -433,7 +433,109 @@ which is a stronger and more testable contract.
 
 ---
 
-## 8. What I would do next
+## 8. Scale
+
+The brief asks how this behaves at millions of assignment calls, where the
+bottlenecks are, and how read and write traffic scale differently. The short answer is
+that the two paths are not the same problem, and almost all of the design follows from
+taking that seriously.
+
+### The measured baseline
+
+From the simulator (20,000 visitors, 50 concurrent, 30% of exposures duplicated):
+
+```
+assignment latency   p50 2.10ms   p90 4.17ms   p99 7.65ms   max 30.12ms
+tracking latency     p50 2.65ms   p99 9.18ms
+throughput           8,306 visitors/s
+```
+
+That is one warm process against a local Postgres. The useful number is not the
+throughput, it is the **shape**: assignment costs ~1.1µs of hashing and its remaining
+latency is almost entirely HTTP and event-loop overhead. There is no per-visitor database
+read anywhere in the assignment path, and that is the property that makes the read side
+scale the way it does.
+
+### Reads scale by not happening
+
+A million assignment calls against one experiment require, in total: one config read at
+startup, zero database queries, and ~1.1 seconds of total CPU across all of them. Adding
+visitors is a CPU cost that is *sublinear* in practice because the marginal visitor is
+cheaper than the average one (connection reuse, warm caches, no allocation churn).
+
+The constraint on the read side is therefore not the database, it is **fan-out and
+per-request overhead**. Three things break first, in this order:
+
+1. **Config cache miss storms.** The single-flight in §3 collapses a cold start to one
+   database read. Without it, N instances starting together issue N reads and the
+   thundering herd lands on the database instead. This is already handled; it is first on
+   the list because it is the failure that actually happens.
+2. **The config snapshot itself.** It is held in memory per instance, so memory is
+   O(experiments) per instance and the working set grows with the number of *live*
+   experiments, not with traffic. A portfolio of 10,000 running experiments is a few MB
+   and fits; a portfolio of 10 million does not, and the fix is a compact binary snapshot
+   plus lazy per-experiment loading rather than a bigger heap.
+3. **The hash becomes a meaningful cost only at very high per-process throughput.** At
+   ~1.1µs per assignment, one core saturates around 800k assignments/s. Above that,
+   scaling is horizontal and stateless, which is the cheapest kind of scaling available
+   precisely because there is no session affinity requirement.
+
+### Writes are the real scaling problem
+
+Reads and writes scale differently, and the asymmetry is the point. Assignment is pure
+computation; tracking is durable state, and it arrives in a 1:1 or 2:1 ratio with every
+assignment (an exposure per assignment, a conversion per exposed visitor who converts).
+
+That asymmetry is why the write path is shaped the way it is:
+
+- **Exposure volume is O(assignments).** At 8,000 visitors/s, a single experiment
+  generates 8,000 rows/s. Nothing about the design makes that cheap; the only lever is
+  that the write is *eventually* durable, queued in bounded memory rather than
+  synchronously awaited.
+- **Conversion volume is O(exposures × conversion rate).** Two orders of magnitude
+  smaller, which is why `events` is a single table and conversions never justify their
+  own store at this scale.
+- **The queue is the pressure valve.** It absorbs database latency spikes and converts
+  them into memory growth, bounded by `TRACK_QUEUE_MAX` and dropped oldest-first. It
+  moves the failure mode from "the customer's page breaks" to "we lose the oldest
+  metrics", which is the correct trade on a critical path. The honest cost is that this
+  is a *delay*, not a *decoupling* — the queue still drains at database write speed, so
+  sustained write throughput above the database's insert rate grows memory until it hits
+  the cap and starts dropping.
+
+**The bottleneck at millions of events is the results query, not the write path.** One
+grouped scan with a unique-visitor count is linear in event volume; the live deployment
+returns results for an experiment with 400 visitors in well under the tracking latency
+budget, but a long-running experiment at hundreds of millions of events needs the
+pre-aggregated rollups named in §9. Reads are O(1) per visitor forever; that scan is
+O(n) and is the first thing that will not survive a year of production data.
+
+### What I would cache, and what I would not
+
+- **Cached:** experiment config, in memory, invalidated by `LISTEN/NOTIFY` with a TTL
+  floor. This is the only cache that matters, and it is the one on the critical path.
+- **Cached:** nothing per-visitor. Caching assignments would be the single most damaging
+  optimization available here — it would trade the property that makes the system
+  correct and horizontally scalable (statelessness) for a few microseconds of hashing
+  that are already free.
+- **Not cached:** results. They are read rarely relative to how often they change, and
+  caching them introduces a staleness question on the one surface where an error is
+  hardest to detect. Materialize them instead (§9), which is a different mechanism for
+  the same problem.
+
+### The honest limit
+
+The measured 8,306 visitors/s is a single warm process on one laptop against a local
+socket. The scaling *arguments* above follow from the architecture — stateless reads,
+queued writes, one grouped results query — and I believe them. What I do not have is a
+load test at a million assignments/s, a multi-region deployment, or a results query
+benchmarked against a realistically large `events` table. Those are the three things I
+would measure first with more time, in that order, and I would not claim the system
+handles them until I had.
+
+---
+
+## 9. What I would do next
 
 In priority order, with the reason each is not in the current build.
 
@@ -455,7 +557,7 @@ In priority order, with the reason each is not in the current build.
 
 ---
 
-## 9. Honest assessment of the weak points
+## 10. Honest assessment of the weak points
 
 - **The queue is lossy under process death.** Argueable, but it is a real gap.
 - **Single shared admin token.** The weakest part of the security posture.
