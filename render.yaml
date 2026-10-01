@@ -47,10 +47,8 @@ services:
         value: 0.0.0.0
 
       # Required. Create at https://neon.tech -> create a project -> Connection.
-      # Use the *direct* connection string, not the "-pooler" one: LISTEN/NOTIFY
-      # requires a session, and a transaction-mode pooler silently breaks config
-      # invalidation so it falls back to TTL-only. This is the single most important
-      # value in this file.
+      # Two strings, two jobs. `neon env pull` writes both of these.
+      #
       # Pooled string (hostname contains -pooler). Query traffic goes through
       # PgBouncer, which is what lets Neon suspend compute while idle.
       - key: DATABASE_URL
