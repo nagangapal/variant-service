@@ -45,13 +45,19 @@
     <dt>Your visitor id</dt><dd id="vid">…</dd>
     <dt>Assigned variant</dt><dd id="variant">…</dd>
     <dt>Creative id</dt><dd id="cid">…</dd>
+    <dt>Client deadline</dt><dd id="budget">…</dd>
   </dl>
 
   <div class="note">
     The headline above is replaced only after the assignment call returns. If the service is
     slow, unreachable, or returning an error, the page keeps the copy that is already here.
-    The snippet races the request against an 80ms deadline, so this demo cannot hang.
-    Set <code>?data-timeout=1</code> behaviour by blocking the endpoint to see it degrade.
+    <p>
+      The snippet's shipped default is an <strong>80ms</strong> client deadline, which is the
+      right budget for a page render but is shorter than a real cross-region round trip. This
+      demo raises it to <strong>1500ms</strong> so the happy path is observable against a
+      remote host. Set <code>data-timeout="1"</code> to see the fail-safe fire instead: the
+      fields above stay <code>—</code>, the page keeps its original copy, and nothing throws.
+    </p>
   </div>
 
   <div style="height:20px"></div>
@@ -87,6 +93,24 @@ async function convert() {
   log(`conversion sent -> ${JSON.stringify(j)}`);
 }
 
+// The demo runs against a remote host, so it allows a longer deadline than the shipped
+// 80ms default. Surfaced in the UI so the number is never a mystery.
+var DEADLINE_MS = 1500;
+$('budget').textContent = DEADLINE_MS + 'ms (snippet default is 80ms)';
+
+// The snippet aborts the fetch and renders defaults when its deadline wins, and
+// deliberately does not call __vsOnAssign. Without this watchdog the page just sits at
+// "…" and looks broken rather than degraded, which is the wrong lesson to teach.
+setTimeout(function () {
+  if ($('vid').textContent === '…') {
+    $('vid').textContent = '—';
+    $('variant').textContent = 'none (client deadline exceeded)';
+    $('cid').textContent = '—';
+    log('no assignment after ' + DEADLINE_MS + 'ms: the fail-safe rendered the default ' +
+        'experience. This is the designed behaviour, not an error.');
+  }
+}, DEADLINE_MS + 500);
+
 window.__vsOnAssign = function (assignments, visitorId) {
   $('vid').textContent = visitorId;
   const a = assignments[0] || {};
@@ -103,6 +127,7 @@ window.__vsOnAssign = function (assignments, visitorId) {
 <script async src="/snippet.js"
         data-experiments="checkout-cta"
         data-endpoint=""
+        data-timeout="1500"
         data-track="false"
         data-debug="true"></script>
 </body>
