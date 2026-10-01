@@ -40,7 +40,7 @@ Two ideas drive the whole design:
 Requires Node 22+ and Docker.
 
 ```bash
-git clone <repo-url> && cd variant-service
+git clone https://github.com/nagangapal/variant-service.git && cd variant-service
 cp .env.example .env                      # defaults work for local development
 
 docker compose up -d                      # Postgres on localhost:55432
@@ -108,7 +108,7 @@ One tag. That is the entire integration.
 
 ```html
 <script async
-        src="https://YOUR-HOST/snippet.js"
+        src="https://variant-service.onrender.com/snippet.js"
         data-experiments="checkout-cta,pricing-copy"></script>
 ```
 
@@ -406,7 +406,7 @@ caching, since the system prompt is identical across candidates for one experime
 ## Testing and verification
 
 ```bash
-npm test          # 131 tests
+npm test          # 135 tests
 npm run typecheck
 npm run lint
 npm run build
@@ -461,7 +461,65 @@ Configuration is entirely environment variables; see [`.env.example`](./.env.exa
 for every option with its default. `DATABASE_URL` and `ADMIN_TOKEN` are the only
 required values, and the process refuses to start in production without a token.
 
-On Fly.io, [`fly.toml`](./fly.toml) is included:
+### The live deployment: Render + Neon
+
+This is where the running instance lives. [`render.yaml`](./render.yaml) is a Render
+blueprint; the database is Neon's free tier.
+
+```bash
+# 1. Database
+neonctl auth
+neonctl projects create --name variant-service --plan free
+neonctl connection-string --project-name variant-service --pooled false
+#   ^ --pooled false matters, see below.
+
+# 2. Service
+render blueprint launch    # or: Render dashboard -> New -> Blueprint
+```
+
+Run migrations once, against the hosted database — deliberately not on boot, so N
+instances starting at once cannot race each other on `CREATE TABLE`:
+
+```bash
+DATABASE_URL='<the direct connection string>' npm run migrate
+```
+
+**Use the direct connection string, not the `-pooler` one.** `LISTEN/NOTIFY` needs a
+session, and a transaction-mode pooler silently breaks it, so config invalidation
+degrades to TTL-only without any error. This is the single easiest way to end up with a
+subtly wrong deployment, which is why `render.yaml` comments it at the value itself.
+
+#### Read the free-tier limits before trusting the latency numbers
+
+The performance figures earlier in this README (p99 7.4ms, 8,150 visitors/s) were
+measured against a local Postgres and a warm process. On the free tier:
+
+| Behaviour | Consequence |
+| --- | --- |
+| Render idles the web service out after ~15 min; cold start takes tens of seconds | First request after idle is slow, or times out at Render's edge |
+| Neon suspends the database after ~5 min idle and takes seconds to resume | Config cache has no warm snapshot to serve after a cold start |
+| Config is cached **in process** | A cold start has nothing cached, so the first request pays full DB latency |
+
+Together these mean a cold instance fails the assignment deadline and returns the
+default experience rather than an error — which is the fail-closed path working as
+designed, not a defect. `ASSIGNMENT_DEADLINE_MS` is raised to 2500ms in
+`render.yaml` to give a resumed Neon connection room to answer, and this only affects
+the cold path; warm requests never touch the database.
+
+A paid instance removes the app cold start. It does not remove Neon's suspend, which is
+why the config cache and its TTL carry more weight here than on a permanently warm
+deployment.
+
+**Content generation is disabled on the live deployment** (`LLM_PROVIDER=none`): a 512MB
+free instance cannot host a model. Everything else is identical, because the service is
+built so that generation is a config change rather than a code change. To enable it, set
+`LLM_API_KEY` and `LLM_PROVIDER=anthropic|openai` in the Render dashboard.
+
+### Self-hosted generation on Fly
+
+For a deployment that generates copy with no third-party API key,
+[`fly.ollama.toml`](./fly.ollama.toml) runs Ollama as a second Fly app on the private
+network, with no public IP. [`fly.toml`](./fly.toml) is the service config.
 
 ```bash
 fly launch --no-deploy
@@ -470,42 +528,27 @@ fly postgres attach variant-db      # sets DATABASE_URL
 fly secrets set ADMIN_TOKEN=$(openssl rand -hex 32)
 fly deploy
 fly ips allocate                    # dedicated IPv4 for sendBeacon traffic
-```
 
-#### Content generation on Fly, without a third-party API key
-
-The service is provider-agnostic, so AI copy generation can run on a self-hosted model
-instead of a hosted API. [`fly.ollama.toml`](./fly.ollama.toml) deploys Ollama as a
-second Fly app; the two talk over Fly's private network, so model traffic never crosses
-the public internet and the Ollama instance gets no public IP.
-
-```bash
+# then, for generation:
 fly launch --config fly.ollama.toml --no-deploy --app variant-ollama
 fly volumes create ollama_data --app variant-ollama --size 10
 fly deploy --config fly.ollama.toml --app variant-ollama
-
-# then point the service at it
 fly secrets set LLM_BASE_URL=http://variant-ollama.internal:11434 --app variant-service
 ```
 
-Two things about this are measured rather than assumed:
+Two things about self-hosting a model are measured rather than assumed:
 
 - **`OLLAMA_KEEP_ALIVE` is load-bearing, not a nicety.** A cold `llama3.1:8b` call
   measured **22.6s, of which 21.0s was model load** and ~1.5s was actual generation.
   Without a keep-alive every generation re-pays that, and a small model is evicted
   between calls.
 - **An 8B model fails generation sometimes.** Across a 4-variant run, `llama3.1:8b`
-  degraded on one arm. That is why the placeholder/fallback handling is strict rather
-  than permissive, and why the model is paired with a long `LLM_TIMEOUT_MS`. A larger
-  hosted model is more reliable; self-hosting buys keyless operation at the cost of
-  occasional retries.
+  degraded on one arm. That is why placeholder copy is tracked distinctly and `start`
+  refuses to run an experiment on it, rather than the failure being quietly tolerated.
 
-Do not use a cloud-proxied Ollama tag such as `gemma4:31b-cloud` on a fresh Fly
-machine: those route to Ollama's hosted service and need an account API key, so
-generation would fail at first call rather than at deploy.
-
-If generation is not wanted on Fly at all, set `LLM_PROVIDER=none`; the rest of the
-service is fully functional with explicitly supplied creatives.
+Do not use a cloud-proxied Ollama tag such as `gemma4:31b-cloud` on a fresh machine:
+those route to Ollama's hosted service and need an account API key, so generation would
+fail at first call rather than at deploy.
 
 Notes for a real deployment:
 
@@ -536,7 +579,7 @@ public/
   demo.html      live demo page
 scripts/
   simulate.ts    load test and statistical validation
-test/            131 tests
+test/            135 tests
 ```
 
 `src/core` has no imports from `src/services` or `src/routes`. The parts that must be

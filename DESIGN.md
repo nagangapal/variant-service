@@ -158,6 +158,51 @@ connection pooler in transaction mode breaks it, and the symptom is not an error
 invalidation quietly falling back to TTL-only. Deploy with a direct connection or
 `session` mode.
 
+### The bug that switching hosts found
+
+This section exists because the outage-reporting logic was wrong, and the only reason I
+know is that moving to a hosted database forced me to run against one.
+
+The status was computed as `lastError ? 'stale' : 'warm'`. That reads correctly and is
+wrong, because it makes a **string** the source of truth for a **boolean** fact. When a
+live connection dies, `node-postgres` throws an `AggregateError` whose `.message` is the
+empty string. Empty string is falsy. So during a complete database outage:
+
+```
+/readyz    → config: "warm",  lastError: ""
+/v1/assign → stale: false
+```
+
+while `refreshFailureCount` climbed past 50 and the snapshot aged without bound. The
+cache itself was behaving exactly as designed the entire time — it kept serving the last
+good snapshot, which is the whole point of the warm-stale path. **Availability was never
+at risk. The observability was.** An operator watching `/readyz` during a total database
+failure would have seen green.
+
+That is the worse of the two failure modes, because the system is designed to be
+self-healing, and a self-healing system with a blind health signal hides the one event
+you would want to be paged for. It is also a bug that unit tests written against a dead
+*port* cannot find: connection-refused carries a non-empty message, so the test passed
+with the bug present. It only appeared once the failure mode was "your connection was
+cut mid-flight" rather than "you never connected".
+
+Two fixes, either sufficient:
+
+1. An explicit `lastRefreshFailed` boolean drives the status, so the fact no longer
+   depends on a string's truthiness. The boolean is set on the failure path and cleared
+   on success, which is the only place the two can disagree.
+2. `describeError()` guarantees a non-empty description, falling back to the error's
+   `name` — which is how an empty `AggregateError` message surfaces as `'AggregateError'`
+   rather than vanishing.
+
+The general lesson, which I would rather have written down than rediscovered: derived
+health from explicit state, not from the incidental shape of an error object. I reached
+for `lastError` because it was there and it was almost right, and "almost right" is
+exactly how a health check ends up lying. The regression test now rejects an
+`Error` with an empty message, and was verified to fail against the original logic before
+being accepted — a test that cannot fail is worse than no test, because it reads as
+coverage.
+
 ---
 
 ## 4. Tracking and idempotency
@@ -421,3 +466,14 @@ In priority order, with the reason each is not in the current build.
 - **`LISTEN/NOTIFY` fails silently behind a transaction-mode pooler.** I have not built a
   runtime check for the listener being attached; `/readyz` reports notification counts,
   which is how you would notice, but it is not an assertion.
+- **I shipped a health check that reported green during a total database outage.** It is
+  fixed and the regression is tested, but the real lesson is that my testing had a blind
+  spot for "the connection dropped" as distinct from "the connection never opened", and I
+  found it by accident while changing hosts rather than by a test. That is the kind of gap
+  that audit finds and demo does not. The concrete fix for the remaining class is
+  fault-injection tests that cut live connections, not ones that point at closed ports.
+- **The live deployment is a free tier with generation disabled.** The p99 figures were
+  measured against a warm local process and a local database; a cold free-tier instance
+  will miss the assignment deadline and serve the default experience. That is the
+  fail-closed path working, but it means the live service is not a performance claim, and
+  I have not benchmarked the hosted path.
