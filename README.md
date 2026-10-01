@@ -677,7 +677,13 @@ obviously correct are the parts with no I/O, which is what makes them testable.
 
 ## Design trade-offs
 
-Full reasoning is in [DESIGN.md](./DESIGN.md): [stateless assignment](./DESIGN.md#2-stateless-assignment),
+- **[HLD.md](./HLD.md)** — the system itself: architecture, runtime topology, interface
+  contracts, data model, the five key flows, capacity, the failure/degradation table,
+  security, and operations.
+- **[DESIGN.md](./DESIGN.md)** — the reasoning: why each decision was made, what was
+  rejected, and two postmortems of bugs I shipped.
+
+DESIGN.md in detail: [stateless assignment](./DESIGN.md#2-stateless-assignment),
 [the config cache](./DESIGN.md#3-the-configuration-cache),
 [tracking and idempotency](./DESIGN.md#4-tracking-and-idempotency),
 [results and statistical validity](./DESIGN.md#5-results),
