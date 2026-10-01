@@ -14,6 +14,17 @@ const schema = z.object({
   HOST: z.string().default('0.0.0.0'),
 
   DATABASE_URL: z.string().url(),
+  // Direct (non-pooled) connection, used only by the LISTEN session.
+  //
+  // Neon's pooled endpoint is PgBouncer in transaction mode, which cannot hold a
+  // session, so LISTEN/NOTIFY silently never fires behind it -- invalidation
+  // degrades to TTL-only with no error. The query pool is fine on the pooled URL,
+  // so the right setup is pooled DATABASE_URL + direct DATABASE_URL_UNPOOLED,
+  // which is also the variable name `neon env pull` writes.
+  //
+  // Optional: falls back to DATABASE_URL, so a single-URL deployment (or local
+  // Postgres) keeps working unchanged.
+  DATABASE_URL_UNPOOLED: z.string().url().optional(),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(500).default(20),
   DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(0).default(2000),
   DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(100).default(3000),

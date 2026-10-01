@@ -296,7 +296,9 @@ export class ConfigCache {
   private async startListener(): Promise<void> {
     const env = getEnv();
     const client = new pg.Client({
-      connectionString: env.DATABASE_URL,
+      // Must be a session, so this cannot go through a transaction-mode pooler
+      // (PgBouncer). Prefer the direct endpoint when one is configured.
+      connectionString: env.DATABASE_URL_UNPOOLED ?? env.DATABASE_URL,
       connectionTimeoutMillis: env.DB_CONNECT_TIMEOUT_MS,
     });
 

@@ -468,26 +468,44 @@ blueprint; the database is Neon's free tier.
 
 ```bash
 # 1. Database
-neonctl auth
-neonctl projects create --name variant-service --plan free
-neonctl connection-string --project-name variant-service --pooled false
-#   ^ --pooled false matters, see below.
+neon auth
+neon projects create --name variant-service --plan free
+neon link --org-id <org-id> --project-name variant-service --region-id aws-us-east-2
+neon env pull        # writes both connection strings into .env -- see below
+```
 
+`neon env pull` writes **two** variables, and using the right one for the right job is
+the single easiest thing to get wrong here:
+
+| Variable | Hostname | Used by |
+| --- | --- | --- |
+| `DATABASE_URL` | contains `-pooler` | the query pool — all normal traffic |
+| `DATABASE_URL_UNPOOLED` | no `-pooler` | the config listener, and migrations |
+
+Neon's pooled endpoint is PgBouncer in transaction mode, which cannot hold a session.
+That is fine for ordinary queries and **silently wrong for `LISTEN/NOTIFY`**: the
+listener connects, the `LISTEN` succeeds, no notification is ever delivered, and nothing
+errors. Config invalidation just falls back to TTL-only, so an admin change takes up to
+`CONFIG_TTL_MS` to propagate and no health check complains.
+
+So: pooled for the app, direct for the one session that needs one. `DATABASE_URL_UNPOOLED`
+is optional and falls back to `DATABASE_URL`, so a single-URL deployment (or local
+Postgres) works unchanged — `test/listenConnection.test.ts` covers both paths.
+
+Migrations use the **direct** string, and run once rather than on boot, so N instances
+starting together cannot race each other on `CREATE TABLE`:
+
+```bash
+DATABASE_URL="$DATABASE_URL_UNPOOLED" npm run migrate
+```
+
+```bash
 # 2. Service
 render blueprint launch    # or: Render dashboard -> New -> Blueprint
 ```
 
-Run migrations once, against the hosted database — deliberately not on boot, so N
-instances starting at once cannot race each other on `CREATE TABLE`:
-
-```bash
-DATABASE_URL='<the direct connection string>' npm run migrate
-```
-
-**Use the direct connection string, not the `-pooler` one.** `LISTEN/NOTIFY` needs a
-session, and a transaction-mode pooler silently breaks it, so config invalidation
-degrades to TTL-only without any error. This is the single easiest way to end up with a
-subtly wrong deployment, which is why `render.yaml` comments it at the value itself.
+`render.yaml` declares both variables with `sync: false`, so Render prompts for both and
+cannot silently receive only the pooled one.
 
 #### Read the free-tier limits before trusting the latency numbers
 
