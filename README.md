@@ -108,7 +108,7 @@ One tag. That is the entire integration.
 
 ```html
 <script async
-        src="https://<your-render-host>/snippet.js"
+        src="https://variant-service-production.up.railway.app/snippet.js"
         data-experiments="checkout-cta,pricing-copy"></script>
 ```
 
@@ -406,7 +406,7 @@ caching, since the system prompt is identical across candidates for one experime
 ## Testing and verification
 
 ```bash
-npm test          # 135 tests
+npm test          # 138 tests
 npm run typecheck
 npm run lint
 npm run build
@@ -461,10 +461,48 @@ Configuration is entirely environment variables; see [`.env.example`](./.env.exa
 for every option with its default. `DATABASE_URL` and `ADMIN_TOKEN` are the only
 required values, and the process refuses to start in production without a token.
 
-### The live deployment: Render + Neon
+### The live deployment: Railway + Neon
 
-This is where the running instance lives. [`render.yaml`](./render.yaml) is a Render
-blueprint; the database is Neon's free tier.
+**Live URL: <https://variant-service-production.up.railway.app>**
+
+The service is deployed and running. The database is Neon's free tier.
+
+```bash
+curl https://variant-service-production.up.railway.app/healthz
+curl https://variant-service-production.up.railway.app/readyz
+```
+
+A seeded experiment, `default/demo-signup-flow`, is already running with 400 real
+visitors. Its results endpoint returns a statistically significant result
+(+111.8% lift, p = 7.8e-05) and a clean SRM check.
+
+> **Note on hosting:** the first choice was Render's free tier. Render now requires
+> payment information before it will create *any* service, including a free one
+> (`Payment information is required to complete this request`), so a no-card deployment
+> was not possible there. Railway's free trial needs no card and supports a long-running
+> container with raw Postgres, so that is what the live deployment uses.
+> [`render.yaml`](./render.yaml) is retained as a ready-to-use blueprint if a card is
+> ever added, and documents the same variable set.
+
+To redeploy:
+
+```bash
+railway login
+railway variables set --service variant-service \
+  DATABASE_URL=... DATABASE_URL_UNPOOLED=... ADMIN_TOKEN=... NODE_ENV=production
+railway up --service variant-service
+```
+
+#### Why the database is Neon
+
+`neon auth` and the project are already provisioned:
+
+```bash
+neon auth
+neon projects create --name variant-service --plan free
+neon link --org-id <org-id> --project-name variant-service --region-id aws-us-west-2
+neon env pull        # writes both connection strings into .env -- see below
+```
 
 ```bash
 # 1. Database
@@ -500,12 +538,9 @@ DATABASE_URL="$DATABASE_URL_UNPOOLED" npm run migrate
 ```
 
 ```bash
-# 2. Service
-render blueprint launch    # or: Render dashboard -> New -> Blueprint
+# 2. Service (already done for the live deployment)
+railway up --service variant-service
 ```
-
-`render.yaml` declares both variables with `sync: false`, so Render prompts for both and
-cannot silently receive only the pooled one.
 
 #### Read the free-tier limits before trusting the latency numbers
 
@@ -514,24 +549,24 @@ measured against a local Postgres and a warm process. On the free tier:
 
 | Behaviour | Consequence |
 | --- | --- |
-| Render idles the web service out after ~15 min; cold start takes tens of seconds | First request after idle is slow, or times out at Render's edge |
+| The service container can be stopped/restarted, so a cold start is possible | First request after a cold start pays full DB latency |
 | Neon suspends the database after ~5 min idle and takes seconds to resume | Config cache has no warm snapshot to serve after a cold start |
 | Config is cached **in process** | A cold start has nothing cached, so the first request pays full DB latency |
 
 Together these mean a cold instance fails the assignment deadline and returns the
 default experience rather than an error — which is the fail-closed path working as
-designed, not a defect. `ASSIGNMENT_DEADLINE_MS` is raised to 2500ms in
-`render.yaml` to give a resumed Neon connection room to answer, and this only affects
+designed, not a defect. `ASSIGNMENT_DEADLINE_MS` is raised to 2500ms in the live
+deployment to give a resumed Neon connection room to answer, and this only affects
 the cold path; warm requests never touch the database.
 
-A paid instance removes the app cold start. It does not remove Neon's suspend, which is
-why the config cache and its TTL carry more weight here than on a permanently warm
-deployment.
+Neon's suspend is the part a paid instance does not remove, which is why the config
+cache and its TTL carry more weight here than on a permanently warm deployment.
 
-**Content generation is disabled on the live deployment** (`LLM_PROVIDER=none`): a 512MB
-free instance cannot host a model. Everything else is identical, because the service is
-built so that generation is a config change rather than a code change. To enable it, set
-`LLM_API_KEY` and `LLM_PROVIDER=anthropic|openai` in the Render dashboard.
+**Content generation is disabled on the live deployment** (`LLM_PROVIDER=none`): a
+small free instance cannot host a model. Everything else is identical, because the
+service is built so that generation is a config change rather than a code change. To
+enable it, set `LLM_API_KEY` and `LLM_PROVIDER=anthropic|openai` on the Railway
+service.
 
 ### Self-hosted generation on Fly
 
@@ -597,7 +632,7 @@ public/
   demo.html      live demo page
 scripts/
   simulate.ts    load test and statistical validation
-test/            135 tests
+test/            138 tests
 ```
 
 `src/core` has no imports from `src/services` or `src/routes`. The parts that must be
